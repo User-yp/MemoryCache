@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageId>MemoryCache.Abstractions</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>MemoryCache Contributors</Authors>
+    <Description>实体内存缓存的契约接口、特性与事件定义（零第三方依赖）。</Description>
+    <PackageTags>memory-cache;entity;di;dotnet</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>
