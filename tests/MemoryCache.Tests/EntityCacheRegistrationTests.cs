@@ -42,13 +42,15 @@ public sealed class EntityCacheRegistrationTests
         var services = new ServiceCollection();
         services.AddSingleton<IEntityLoader<SampleSwitch>, FakeSwitchLoader>();
         services.AddSingleton<IEntityLoader<SampleComposite>, FakeCompositeLoader>();
+        services.AddSingleton<IEntityLoader<SampleTimeoutEntity>, FakeTimeoutLoader>();
+        services.AddSingleton<IEntityLoader<SamplePolicyEntity>, FakePolicyLoader>();
         services.AddEntityMemoryCache(builder =>
             builder.ScanAssembly(typeof(SampleSwitch).Assembly));
 
         using var provider = services.BuildServiceProvider();
         var cacheService = provider.GetRequiredService<IEntityCacheService>();
 
-        Assert.Equal(2, cacheService.RegisteredTypes.Count);
+        Assert.Equal(4, cacheService.RegisteredTypes.Count);
         Assert.Contains(typeof(SampleSwitch), cacheService.RegisteredTypes);
         Assert.Contains(typeof(SampleComposite), cacheService.RegisteredTypes);
         Assert.True(cacheService.IsRegistered<SampleSwitch>());
@@ -64,13 +66,15 @@ public sealed class EntityCacheRegistrationTests
         var services = new ServiceCollection();
         services.AddSingleton<IEntityLoader<SampleSwitch>, FakeSwitchLoader>();
         services.AddSingleton<IEntityLoader<SampleComposite>, FakeCompositeLoader>();
+        services.AddSingleton<IEntityLoader<SampleTimeoutEntity>, FakeTimeoutLoader>();
+        services.AddSingleton<IEntityLoader<SamplePolicyEntity>, FakePolicyLoader>();
         services.AddEntityMemoryCache(builder =>
             builder.ScanAssembly(typeof(SampleUnmarkedEntity).Assembly));
 
         using var provider = services.BuildServiceProvider();
         var cacheService = provider.GetRequiredService<IEntityCacheService>();
 
-        Assert.Equal(2, cacheService.RegisteredTypes.Count);
+        Assert.Equal(4, cacheService.RegisteredTypes.Count);
         Assert.Contains(typeof(SampleSwitch), cacheService.RegisteredTypes);
         Assert.Contains(typeof(SampleComposite), cacheService.RegisteredTypes);
         Assert.DoesNotContain(typeof(SampleUnmarkedEntity), cacheService.RegisteredTypes);
@@ -138,6 +142,30 @@ public sealed class EntityCacheRegistrationTests
             services.AddEntityMemoryCache(builder =>
                 builder.AddEntity<SampleSwitch>(entity =>
                     entity.WithKey("NoSuchProperty"))));
+    }
+
+    [Fact]
+    public void Negative_load_timeout_fails_at_registration_time()
+    {
+        var services = new ServiceCollection();
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            services.AddEntityMemoryCache(builder =>
+                builder.AddEntity<SampleSwitch>(entity =>
+                    entity.WithLoadTimeout(TimeSpan.FromMilliseconds(-1)))));
+    }
+
+    [Fact]
+    public void Zero_or_null_load_timeout_means_no_timeout()
+    {
+        var services = new ServiceCollection();
+
+        var exception = Record.Exception(() => services.AddEntityMemoryCache(builder =>
+            builder.AddEntity<SampleSwitch>(entity => entity
+                .WithLoadTimeout(TimeSpan.Zero)
+                .WithLoadTimeout(null))));
+
+        Assert.Null(exception);
     }
 
     [Fact]

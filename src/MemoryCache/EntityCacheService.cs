@@ -18,19 +18,23 @@ internal sealed class EntityCacheService : IEntityCacheService, IDisposable
 
     private readonly CacheMetrics _metrics;
 
+    private readonly CancellationTokenSource _lifetimeSource = new();
+
     public EntityCacheService(IServiceProvider serviceProvider, EntityCacheOptions options)
     {
         ValidateDiLoaders(serviceProvider, options);
 
         _serviceOptions = options.ServiceOptions;
-        _metrics = options.Metrics;
+        _metrics = serviceProvider.GetRequiredService<CacheMetrics>();
         _registrations = options.Registrations.ToDictionary(
             registration => registration.EntityType,
             registration => registration);
 
         foreach (var registration in options.Registrations)
         {
-            _entries.TryAdd(registration.EntityType, registration.CreateEntry(serviceProvider));
+            _entries.TryAdd(
+                registration.EntityType,
+                registration.CreateEntry(serviceProvider, _lifetimeSource.Token));
         }
 
         _metrics.ConfigureGaugeProviders(
@@ -144,5 +148,10 @@ internal sealed class EntityCacheService : IEntityCacheService, IDisposable
     }
 
     public void Dispose()
-        => _metrics.Dispose();
+    {
+        // 取消生命周期令牌，让在途的后台刷新尽快退出。
+        // 指标（Meter）由 DI 容器持有并负责释放，这里不重复释放。
+        _lifetimeSource.Cancel();
+        _lifetimeSource.Dispose();
+    }
 }

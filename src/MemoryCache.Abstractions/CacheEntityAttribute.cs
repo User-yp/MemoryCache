@@ -43,4 +43,31 @@ public sealed class CacheEntityAttribute : Attribute
     /// 值为 <c>0</c>（默认）表示不启用定时刷新。
     /// </remarks>
     public double RefreshIntervalSeconds { get; set; }
+
+    /// <summary>
+    /// 获取或设置单次刷新的超时时间（秒）。
+    /// </summary>
+    /// <remarks>
+    /// 值为 <c>0</c>（默认）表示不设超时。超时会中止本次取数并保留旧快照，
+    /// 且按“刷新失败”记录（<see cref="IEntityCache{TEntity}.LastError"/> 为
+    /// <see cref="TimeoutException"/>）。
+    /// </remarks>
+    public double LoadTimeoutSeconds { get; set; }
+
+    /// <summary>
+    /// 获取或设置加载过程中发现重复键时的处理方式。
+    /// </summary>
+    /// <remarks>
+    /// 默认值为 <see cref="Abstractions.DuplicateKeyPolicy.LogWarningAndKeepLast"/>。
+    /// </remarks>
+    public DuplicateKeyPolicy DuplicateKeyPolicy { get; set; } =
+        DuplicateKeyPolicy.LogWarningAndKeepLast;
+
+    /// <summary>
+    /// 获取或设置加载过程中发现条目缓存键为 <c>null</c> 时的处理方式。
+    /// </summary>
+    /// <remarks>
+    /// 默认值为 <see cref="Abstractions.NullKeyPolicy.KeepUnindexed"/>。
+    /// </remarks>
+    public NullKeyPolicy NullKeyPolicy { get; set; } = NullKeyPolicy.KeepUnindexed;
 }

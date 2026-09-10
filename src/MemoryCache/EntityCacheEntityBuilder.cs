@@ -26,10 +26,14 @@ public sealed class EntityCacheEntityBuilder<TEntity>
 
     internal double RefreshIntervalSeconds { get; private set; }
 
+    internal TimeSpan? LoadTimeout { get; private set; }
+
     internal InvalidationMode InvalidationMode { get; private set; } = InvalidationMode.ReloadInBackground;
 
     internal DuplicateKeyPolicy DuplicateKeyPolicy { get; private set; } =
         DuplicateKeyPolicy.LogWarningAndKeepLast;
+
+    internal NullKeyPolicy NullKeyPolicy { get; private set; } = NullKeyPolicy.KeepUnindexed;
 
     /// <summary>
     /// 配置用作缓存键的属性。
@@ -114,6 +118,17 @@ public sealed class EntityCacheEntityBuilder<TEntity>
     }
 
     /// <summary>
+    /// 配置加载过程中发现条目缓存键为 <c>null</c> 时的处理方式。
+    /// </summary>
+    /// <param name="policy">null 键策略。</param>
+    /// <returns>当前构建器实例。</returns>
+    public EntityCacheEntityBuilder<TEntity> WithNullKeyPolicy(NullKeyPolicy policy)
+    {
+        NullKeyPolicy = policy;
+        return this;
+    }
+
+    /// <summary>
     /// 配置对当前实体调用服务级 <c>Invalidate</c> API 时的行为。
     /// </summary>
     /// <param name="mode">失效模式。</param>
@@ -145,6 +160,32 @@ public sealed class EntityCacheEntityBuilder<TEntity>
         return this;
     }
 
+    /// <summary>
+    /// 配置单次刷新的超时时间：超过该时长仍未取数完成时中止本次加载。
+    /// </summary>
+    /// <param name="timeout">
+    /// 超时时间；<c>null</c> 或 <see cref="TimeSpan.Zero"/> 表示不设超时。
+    /// </param>
+    /// <returns>当前构建器实例。</returns>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="timeout"/> 为负数。
+    /// </exception>
+    /// <remarks>
+    /// 超时视为<b>刷新失败</b>（保留旧快照、写入 <c>LastError</c>、触发
+    /// <c>Reloaded</c>），与调用方主动取消区别对待；是否真正中止取决于加载器
+    /// 是否使用了传入的取消令牌。
+    /// </remarks>
+    public EntityCacheEntityBuilder<TEntity> WithLoadTimeout(TimeSpan? timeout)
+    {
+        if (timeout < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(timeout), timeout, "must not be negative.");
+        }
+
+        LoadTimeout = timeout > TimeSpan.Zero ? timeout : null;
+        return this;
+    }
+
     internal EntityCacheEntityBuilder<TEntity> ApplyAttribute(CacheEntityAttribute attribute)
     {
         if (_name is null && !string.IsNullOrWhiteSpace(attribute.Name))
@@ -161,6 +202,14 @@ public sealed class EntityCacheEntityBuilder<TEntity>
 
         CapacityWarningThreshold = attribute.CapacityWarningThreshold;
         RefreshIntervalSeconds = attribute.RefreshIntervalSeconds;
+        DuplicateKeyPolicy = attribute.DuplicateKeyPolicy;
+        NullKeyPolicy = attribute.NullKeyPolicy;
+
+        if (attribute.LoadTimeoutSeconds > 0)
+        {
+            LoadTimeout = TimeSpan.FromSeconds(attribute.LoadTimeoutSeconds);
+        }
+
         return this;
     }
 
@@ -183,8 +232,10 @@ public sealed class EntityCacheEntityBuilder<TEntity>
             KeySelector = _keySelector,
             CapacityWarningThreshold = CapacityWarningThreshold,
             RefreshIntervalSeconds = RefreshIntervalSeconds,
+            LoadTimeout = LoadTimeout,
             InvalidationMode = InvalidationMode,
             DuplicateKeyPolicy = DuplicateKeyPolicy,
+            NullKeyPolicy = NullKeyPolicy,
         };
     }
 

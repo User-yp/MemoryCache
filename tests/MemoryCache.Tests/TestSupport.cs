@@ -14,6 +14,18 @@ internal sealed class FakeCompositeLoader : IEntityLoader<SampleComposite>
         => Task.FromResult<IReadOnlyCollection<SampleComposite>>(Array.Empty<SampleComposite>());
 }
 
+internal sealed class FakeTimeoutLoader : IEntityLoader<SampleTimeoutEntity>
+{
+    public Task<IReadOnlyCollection<SampleTimeoutEntity>> LoadAsync(CancellationToken cancellationToken)
+        => Task.FromResult<IReadOnlyCollection<SampleTimeoutEntity>>(Array.Empty<SampleTimeoutEntity>());
+}
+
+internal sealed class FakePolicyLoader : IEntityLoader<SamplePolicyEntity>
+{
+    public Task<IReadOnlyCollection<SamplePolicyEntity>> LoadAsync(CancellationToken cancellationToken)
+        => Task.FromResult<IReadOnlyCollection<SamplePolicyEntity>>(Array.Empty<SamplePolicyEntity>());
+}
+
 internal sealed class SequenceLoader<TEntity> : IEntityLoader<TEntity>
     where TEntity : class
 {
@@ -73,6 +85,7 @@ internal sealed class GateLoader<TEntity> : IEntityLoader<TEntity>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly IReadOnlyCollection<TEntity> _items;
     private int _loadCount;
+    private int _observedCancellation;
 
     public GateLoader(params TEntity[] items)
     {
@@ -81,13 +94,25 @@ internal sealed class GateLoader<TEntity> : IEntityLoader<TEntity>
 
     public int LoadCount => Volatile.Read(ref _loadCount);
 
+    /// <summary>加载器收到的取消令牌是否真的被触发过。</summary>
+    public bool ObservedCancellation => Volatile.Read(ref _observedCancellation) == 1;
+
     public void Release()
         => _release.TrySetResult();
 
     public async Task<IReadOnlyCollection<TEntity>> LoadAsync(CancellationToken cancellationToken)
     {
         Interlocked.Increment(ref _loadCount);
-        await _release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            Volatile.Write(ref _observedCancellation, 1);
+            throw;
+        }
+
         return _items;
     }
 }

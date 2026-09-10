@@ -131,13 +131,14 @@ public sealed class CacheServiceHostingTests
         await StartAllAsync(hostedServices);
         try
         {
+            // 超时会真正取消取数，缓存保持未加载状态，且不算加载失败。
+            await WaitUntilAsync(() => loader.ObservedCancellation, timeoutMilliseconds: 10_000);
+            Assert.Equal(0, entry.Version);
             Assert.Equal(0, entry.Count);
             Assert.Null(entry.LastError);
         }
         finally
         {
-            loader.Release();
-            await WaitUntilAsync(() => entry.Version == 1, timeoutMilliseconds: 10_000);
             await StopAllAsync(hostedServices);
         }
     }
@@ -163,14 +164,17 @@ public sealed class CacheServiceHostingTests
             () => StartAllAsync(hostedServices));
         Assert.IsAssignableFrom<OperationCanceledException>(exception.InnerException);
 
-        loader.Release();
+        await WaitUntilAsync(() => loader.ObservedCancellation, timeoutMilliseconds: 10_000);
+
         var entry = provider.GetRequiredService<IEntityCacheService>().Get<SampleSwitch>();
-        await WaitUntilAsync(() => entry.Version == 1, timeoutMilliseconds: 10_000);
+        Assert.Equal(0, entry.Version);
+        Assert.Null(entry.LastError);
+
         await StopAllAsync(hostedServices);
     }
 
     [Fact]
-    public async Task Warmup_still_propagates_host_shutdown_cancellation()
+    public async Task Warmup_is_aborted_when_the_host_shuts_down()
     {
         var loader = new GateLoader<SampleSwitch>(CreateSwitch("A", "v1"));
         var services = new ServiceCollection();
@@ -183,16 +187,23 @@ public sealed class CacheServiceHostingTests
 
         await using var provider = services.BuildServiceProvider();
         var hostedServices = provider.GetServices<IHostedService>().ToArray();
+        var entry = provider.GetRequiredService<IEntityCacheService>().Get<SampleSwitch>();
 
         using var shutdown = new CancellationTokenSource();
+        var start = hostedServices[0].StartAsync(shutdown.Token);
+        await WaitUntilAsync(() => loader.LoadCount == 1, timeoutMilliseconds: 10_000);
+
         shutdown.Cancel();
 
+        // 宿主取消不属于预热失败，会照常向上传播。
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => hostedServices[0].StartAsync(shutdown.Token));
+            () => start);
 
-        loader.Release();
-        var entry = provider.GetRequiredService<IEntityCacheService>().Get<SampleSwitch>();
-        await WaitUntilAsync(() => entry.Version == 1, timeoutMilliseconds: 10_000);
+        // 在途加载被真正中断。
+        await WaitUntilAsync(() => loader.ObservedCancellation, timeoutMilliseconds: 10_000);
+        Assert.Equal(0, entry.Version);
+        Assert.Null(entry.LastError);
+
         await StopAllAsync(hostedServices);
     }
 

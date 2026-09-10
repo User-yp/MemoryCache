@@ -42,6 +42,9 @@
   `GetByKey(("Group1", "TestJob"))` 元组形式；
 - **单飞刷新**：同一实体的并发刷新只执行一次加载；
 - **失败保护**：刷新失败保留上一份快照继续服务，只记录错误；
+- **取消与超时**：刷新令牌一路传给加载器，取消/超时能真正中止取数；取消是静默的，
+  超时按失败记录并可自动重试（见 [7.6](#76-取消语义)）；
+- **数据策略**：重复键、`null` 键的处理方式可配（流式配置或特性声明）；
 - **失效语义**：`ReloadAsync` 主动刷新、`Invalidate` 后台刷新或仅标记失效、
   可选定时刷新兜底；
 - **启动预热**：应用启动后自动加载全部已注册实体（可配置）；
@@ -170,14 +173,20 @@ services.AddEntityMemoryCache(builder =>
 | 加载器（Loader） | 使用方提供的取数逻辑，ORM 由使用方自选 |
 | 失效（Invalidate） | 通知缓存“数据已变化”，按策略立即刷新或仅标记 |
 | 单飞（Single-flight） | 同一实体同一时刻只执行一次加载，并发请求共享结果 |
+| 刷新超时（Load Timeout） | 单次加载的时限，超时按刷新失败处理 |
 
 ### 3.1 一致性模型
 
 - **读者永远无锁**：查询通过 volatile 读取当前快照，看到的一定是某一次完整加载结果；
 - **写者原子发布**：刷新时先构建全新快照，成功后一次替换，读者不会看到半新半旧数据；
 - **失败不破坏服务**：刷新失败保留上一份快照，`LastError` 记录原因，下一次刷新自动恢复；
+- **取消不等于失败**：刷新被取消时同样保留上一份快照，但不写 `LastError`、不计失败，
+  详见 [7.6 取消语义](#76-取消语义)；
+- **超时按失败处理**：配置了单次刷新超时时，超时会中止取数并记录为失败
+  （`LastError` 为 `TimeoutException`），后续 `EnsureFreshAsync` 会自动重试；
 - **不承诺跨实体一致**：各实体独立加载、独立版本；
-- **快照按只读使用**：组件保存引用并返回只读集合，业务代码不得修改缓存内对象。
+- **快照按只读使用**：`GetSnapshot()` 返回只读包装（无法强转成数组修改），
+  但快照内的对象仍按引用保存，业务代码不得修改这些对象。
 
 ---
 
@@ -193,6 +202,9 @@ public sealed class CacheEntityAttribute : Attribute
     public string? Name { get; set; }               // 注册名/日志标签，默认类型名
     public long CapacityWarningThreshold { get; set; } = 50_000; // 条目数告警阈值
     public double RefreshIntervalSeconds { get; set; }          // 0 = 不启用定时刷新
+    public double LoadTimeoutSeconds { get; set; }              // 0 = 不设单次刷新超时
+    public DuplicateKeyPolicy DuplicateKeyPolicy { get; set; }   // 重复键策略
+    public NullKeyPolicy NullKeyPolicy { get; set; }             // null 键策略
 }
 ```
 
@@ -217,13 +229,17 @@ public sealed class JobConfig { ... }
 3. 复合键顺序即属性声明顺序，查询元组需保持一致；
 4. 完全没有键的实体仍可注册（只做快照/全量扫描查询），键查询 API 会抛
    `NotSupportedException`；
-5. 键不允许为 `null`；
+5. 键为 `null` 时按 `NullKeyPolicy` 处理：默认（`KeepUnindexed`）记录告警并把该条目
+   留在快照里、只是不进键索引（键查询查不到它）；可改为 `Throw` 让整次刷新失败、保留旧快照；
 6. 重复键默认记录警告并保留后加载的条目，可改为 `KeepFirst` 或 `Throw`
-   （整次刷新失败，旧快照保留）。
+   （整次刷新失败，旧快照保留）；
+7. 复合键的**分量**允许为 `null`（它只是一个取值，键本身仍是非空元组），
+   上面的 null 键策略不适用于它。
 
 ### 4.3 快照可变性约定
 
-缓存内对象按引用保存，`GetSnapshot()` 返回的列表与条目**都不应被修改**。
+`GetSnapshot()` 返回的是只读包装，调用方无法强转成数组或通过 `IList<T>` 修改内容。
+但缓存内的**对象**仍按引用保存，业务代码不得修改这些对象。
 若业务确需改动后回写数据库，请复制实体或新建对象，再走“改库 → 刷新”流程。
 
 ---
@@ -299,14 +315,21 @@ services.AddEntityMemoryCache(builder =>
 | `WithKey(Func<T, object?>)` | — | 委托取键，优先级最高 |
 | `WithLoader(Func<IServiceProvider, IEntityLoader<T>>)` | DI 解析 | 显式加载器工厂 |
 | `WithDuplicateKeyPolicy(DuplicateKeyPolicy)` | `LogWarningAndKeepLast` | 重复键策略 |
+| `WithNullKeyPolicy(NullKeyPolicy)` | `KeepUnindexed` | `null` 键策略，见 4.2 |
 | `WithInvalidationMode(InvalidationMode)` | `ReloadInBackground` | `Invalidate` 行为 |
 | `WithRefreshInterval(TimeSpan)` | 不启用 | 后台定时刷新周期 |
+| `WithLoadTimeout(TimeSpan?)` | 不超时 | 单次刷新超时；超时按刷新失败处理，见 7.6 |
+
+除键与加载器外，`WithDuplicateKeyPolicy` / `WithNullKeyPolicy` / `WithLoadTimeout` /
+`WithRefreshInterval` 也都能通过 `[CacheEntity]` 上的同名属性声明，便于
+`ScanAssembly` 场景使用。
 
 ### 5.6 DI 作用域与 DbContext
 
 - `IEntityCacheService` 是单例；
 - 每次刷新在**独立 DI 作用域**内解析加载器，加载结束后作用域立即释放；
 - 因此作用域/瞬时加载器也能安全使用；
+- 容器释放时会先取消服务的生命周期令牌，让由 `Invalidate` 触发的后台刷新尽快退出；
 - EF Core 场景推荐 `AddPooledDbContextFactory<TContext>()` +
   `IDbContextFactory<TContext>`，加载时 `AsNoTracking()`。
 
@@ -332,12 +355,12 @@ bool registered = cacheService.IsRegistered<AppSwitch>();
 | `IsStale` | 是否已失效但尚未成功刷新 |
 | `LoadedAt` | 最近一次成功加载时间（未加载为 `null`） |
 | `LastError` | 最近一次刷新错误（无则 `null`） |
-| `GetSnapshot()` | 当前快照（只读） |
+| `GetSnapshot()` | 当前快照；只读包装，无法强转成数组修改 |
 | `AsQueryable()` | LINQ 内存查询入口 |
 | `ContainsKey(key)` | 键是否存在 |
 | `TryGetValue(key, out value)` | 尝试取值 |
 | `GetByKey(key)` | 按键取值，未命中返回 `null` |
-| `Reloaded` 事件 | 每次刷新成功/失败后触发 |
+| `Reloaded` 事件 | 每次刷新成功/失败后触发（取消不触发） |
 
 ```csharp
 var cache = cacheService.Get<AppSwitch>();
@@ -365,6 +388,10 @@ bool has = jobCache.ContainsKey(("Group1", "TestJob"));
 | `IEntityCacheService.ReloadAllAsync()` | 全量 | 受控并行刷新全部 |
 | `IEntityCache<T>.ReloadAsync()` | 部分 | 同上 |
 | `IEntityCache<T>.EnsureFreshAsync()` | 部分 | 仅在“未加载/已失效/上次失败”时刷新 |
+
+这些 API 的 `CancellationToken` 都会透传给加载器的 `LoadAsync(ct)`；`ReloadAllAsync`
+按 `WithReloadAllParallelism` 限流（`1` 表示严格串行，即上一个实体加载完成后才启动下一个），
+详见 [7.6 取消语义](#76-取消语义)。
 
 ### 7.2 写入方推荐流程
 
@@ -401,12 +428,13 @@ cacheService.Invalidate(typeof(AppSwitch));
 - **启动预热**：默认开启，由 `EntityCacheWarmupHostedService` 执行，配合
   Generic Host 使用（`builder.Build().Run()` 会自动启动 Hosted Service）；
 - **定时刷新**：为实体配置 `WithRefreshInterval(...)` 后，
-  `EntityCachePeriodicRefresher` 每秒检查一次到期实体并后台刷新；
+  `EntityCachePeriodicRefresher` 每秒检查一次到期实体并后台刷新，同一轮到期的多个实体
+  同样受 `WithReloadAllParallelism` 限流；
 - 单次定时刷新失败不影响后续周期，只会记录日志并保留旧快照。
 - **预热超时**：`WarmupTimeout` 到期按**预热失败**处理，交由
   `StartupFailurePolicy` 决定行为——`Continue`（默认）记录告警后继续启动，
-  `Throw` 抛出 `TimeoutException`。超时只是不再等待，未完成的加载仍会在后台
-  跑完并填入缓存；宿主关闭导致的取消不算预热失败，会照常向上传播。
+  `Throw` 抛出 `TimeoutException`。超时会把取消信号传给正在执行的加载器，
+  真正中断本次取数；宿主关闭导致的取消不算预热失败，会照常向上传播。
 
 > 若只是 `ServiceProvider` + 手动管理（如示例工程），Hosted Service 不会自动运行；
 > 请手动调用 `ReloadAsync` / `ReloadAllAsync`，或自行调度
@@ -425,6 +453,32 @@ cache.Reloaded += (_, args) =>
 };
 ```
 
+事件的行为约定：
+
+- 在缓存内部锁**之外**、且**等待刷新的调用方恢复之前**触发，因此回调里可以放心做
+  日志、指标等慢操作，不会阻塞其他线程的状态操作；
+- 指标先记录、再触发事件，订阅者抛异常不会让指标丢数；
+- 每个订阅者单独调用并各自捕获异常：某个订阅者抛异常只记录告警日志，
+  既不影响其他订阅者，也不会掩盖加载器本身的错误；
+- 刷新被取消时不触发；**不要在回调里同步等待同一实体的 `ReloadAsync()`**，
+  那会等待当前这次刷新本身。
+
+### 7.6 取消语义
+
+刷新 API 的取消令牌会一路传给加载器的
+`IEntityLoader<TEntity>.LoadAsync(CancellationToken)`，因此取消能真正中止正在执行的取数：
+
+| 行为 | 说明 |
+| --- | --- |
+| 令牌透传 | `ReloadAsync(ct)` / `EnsureFreshAsync(ct)` / `ReloadAllAsync(ct)` 的令牌都会交给加载器 |
+| 单飞由发起者决定 | 同一实体同一时刻只跑一次加载，它使用**发起那一次刷新**的调用方令牌；之后并发加入的调用方只能取消自己的等待，不会改变已经在跑的加载 |
+| 取消不算失败 | 加载被取消时保留上一份快照，不写 `LastError`、不计失败指标、也不触发 `Reloaded` 事件；取消异常照常抛给调用方 |
+| 超时≠取消 | 配置了 `WithLoadTimeout(...)` 时，超时会中止本次取数并按**刷新失败**处理（`LastError` 为 `TimeoutException`、计失败、触发 `Reloaded`），`EnsureFreshAsync` 之后会自动重试 |
+| 加载器需配合 | 组件只负责传递令牌，能否真正中止取决于加载器是否把令牌用在数据库命令 / HTTP 请求上 |
+
+> 正因如此，「预热超时」与「宿主关闭」都能中断那次加载中正在执行的查询；
+> 容器释放时也会取消由 `Invalidate` 触发的后台刷新。
+
 ---
 
 ## 8. 日志与指标
@@ -434,7 +488,8 @@ cache.Reloaded += (_, args) =>
 组件通过 `ILogger<T>` 记录：
 
 - Debug：无（当前刷新日志以告警为主）；
-- Warning：刷新失败（保留旧快照）、重复键、条目数超阈值、定时刷新失败；
+- Warning：刷新失败（保留旧快照）、刷新超时、重复键、`null` 键条目被排除出索引、
+  条目数超阈值、定时刷新失败、`Reloaded` 订阅者抛异常；
 - Information：启动预热完成。
 
 接入任一日志提供者（Console / Serilog / NLog）后即可看到。
@@ -450,6 +505,8 @@ cache.Reloaded += (_, args) =>
 
 可通过 `MeterListener`、`System.Diagnostics.Metrics` 或 OpenTelemetry .NET 直接采集；
 无监听器时接近零开销；`WithMetrics(false)` 可整体关闭。
+指标由 DI 容器持有：同一个 `ServiceCollection` 构建多个容器时各自一份 `Meter`，
+不会重复注册或互相影响。
 
 ---
 
@@ -510,11 +567,14 @@ dotnet run --project benchmarks/MemoryCache.Benchmark -c Release
 本机（10,000 条模拟配置，Release）参考数据：
 
 ```text
-GetByKey  100 万次   ≈ 4.6M ops/s
-GetSnapshot 100 万次 ≈ 128M ops/s
-AsQueryable 全量过滤 ≈ 0.5 ms/次
+GetByKey 单键（100 万次）        约   0.05 µs/次，分配   0.0 B/次
+GetByKey 复合键元组（100 万次）  约   0.26 µs/次，分配   0.0 B/次
+GetSnapshot（读快照 100 万次）   约   0.006 µs/次，分配   0.0 B/次
+AsQueryable 全量过滤（1,000 次） 约 633 µs/次，分配 11439 B/次
 ```
 
+基准会把键预先构造好，因此测的是纯查询开销：单键与复合键查询都是零分配。
+`AsQueryable` 的分配来自 LINQ 过滤本身，量级由过滤结果集决定。
 数值依机器与负载而异，仅作相对参考。
 
 ---
@@ -531,7 +591,7 @@ dotnet pack  src/MemoryCache/MemoryCache.csproj -c Release -o artifacts/packages
 dotnet pack  src/MemoryCache.Abstractions/MemoryCache.Abstractions.csproj -c Release -o artifacts/packages
 ```
 
-质量标准：构建 0 警告 0 错误；当前 37 个测试全部通过。
+质量标准：构建 0 警告 0 错误；当前 58 个测试全部通过。
 
 ---
 
@@ -547,6 +607,7 @@ dotnet pack  src/MemoryCache.Abstractions/MemoryCache.Abstractions.csproj -c Rel
 | M3 | 预热、定时刷新、失败策略、受控并行 | ✅ |
 | M4 | EF Core 集成示例与真实 MySQL 联调 | ✅ |
 | M5 | 指标、日志、XML 文档、打包、基准 | ✅ |
+| M6 | 取消透传与刷新超时、数据策略（null 键）、读路径零分配、事件回调加固 | ✅ |
 
 ### 12.2 命名与版本
 
@@ -580,6 +641,10 @@ var job = cache.Get<JobConfig>().GetByKey(("Group1", "TestJob"));
 `LastError` 已记录；定时/后台刷新则只记日志。业务上可捕获后走告警，
 下一次 `EnsureFreshAsync`/定时任务会自动重试。
 
+如果异常是 `TimeoutException`，说明该实体配置了 `WithLoadTimeout(...)` 且本次取数超时；
+如果是 `OperationCanceledException`，说明是调用方主动取消——这种情况**不算失败**，
+不会写入 `LastError`。
+
 **Q3：为什么读总是旧数据？**
 
 组件默认**读永不触库**；变更后请调用
@@ -588,7 +653,8 @@ var job = cache.Get<JobConfig>().GetByKey(("Group1", "TestJob"));
 
 **Q4：缓存条目能不能改？**
 
-不能。快照按引用保存并只读使用；需要“改配置”时应更新数据库后刷新缓存。
+不能。`GetSnapshot()` 返回的是只读包装（无法强转成数组修改），快照内的对象也按引用保存；
+需要“改配置”时应更新数据库后刷新缓存。
 
 **Q5：键没配置时为什么抛异常？**
 
@@ -603,6 +669,19 @@ var job = cache.Get<JobConfig>().GetByKey(("Group1", "TestJob"));
 
 当前为进程内缓存，各实例各自维护一份。多实例需要外部通知：
 数据库变更后通过 MQ 等广播，收到消息的实例调用 `Invalidate`/`ReloadAsync`。
+
+**Q8：加载器很慢、想让刷新有个时限怎么办？**
+
+用 `WithLoadTimeout(TimeSpan)` 或特性上的 `LoadTimeoutSeconds`。超时会把取消信号传给
+加载器并中止本次取数，同时按**刷新失败**记录（`LastError` 为 `TimeoutException`、
+计入失败指标、触发 `Reloaded`），下一次 `EnsureFreshAsync`/定时刷新会自动重试。
+注意超时是协作式的：加载器必须把拿到的令牌用在数据库命令/HTTP 请求上才真正生效。
+
+**Q9：表里有一条键为 `null` 的记录，会不会把整个缓存刷坏？**
+
+默认不会。`NullKeyPolicy` 默认为 `KeepUnindexed`：记录告警、该条目保留在快照里，
+只是不进键索引；刷新照常成功。需要严格模式时把它设为 `Throw`，让整次刷新失败、
+继续使用上一份快照。
 
 ---
 

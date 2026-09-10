@@ -34,6 +34,16 @@ public sealed class CacheEntityAttributeTests
         Assert.Null(attribute.Name);
         Assert.Equal(50_000, attribute.CapacityWarningThreshold);
         Assert.Equal(0, attribute.RefreshIntervalSeconds);
+        Assert.Equal(0, attribute.LoadTimeoutSeconds);
+    }
+
+    [Fact]
+    public void Attribute_exposes_the_configured_load_timeout()
+    {
+        var attribute = typeof(SampleTimeoutEntity).GetCustomAttribute<CacheEntityAttribute>();
+
+        Assert.NotNull(attribute);
+        Assert.Equal(0.1, attribute.LoadTimeoutSeconds);
     }
 
     [Fact]

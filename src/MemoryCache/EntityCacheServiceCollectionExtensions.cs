@@ -39,10 +39,12 @@ public static class EntityCacheServiceCollectionExtensions
         {
             Registrations = builder.Registrations.ToArray(),
             ServiceOptions = builder.ServiceOptions,
-            Metrics = new CacheMetrics(builder.ServiceOptions),
         };
 
         services.AddSingleton(options);
+        // 指标由容器持有：同一个 ServiceCollection 构建多个容器时各自独立，
+        // 也不会把同一个 Meter 的仪表注册两遍。
+        services.AddSingleton(_ => new CacheMetrics(builder.ServiceOptions));
         services.AddSingleton<IEntityCacheService>(serviceProvider =>
             new EntityCacheService(serviceProvider, options));
 

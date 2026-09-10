@@ -40,6 +40,23 @@ public enum DuplicateKeyPolicy
 }
 
 /// <summary>
+/// 定义加载过程中发现条目的缓存键为 <c>null</c> 时的处理方式。
+/// </summary>
+public enum NullKeyPolicy
+{
+    /// <summary>
+    /// 记录警告并保留该条目，但不把它放进键索引：快照与全量扫描仍能看到它，
+    /// 依赖键的 API（<c>GetByKey</c> / <c>ContainsKey</c> / <c>TryGetValue</c>）查不到它。
+    /// </summary>
+    KeepUnindexed = 0,
+
+    /// <summary>
+    /// 将整次刷新视为失败；继续使用上一次的快照。
+    /// </summary>
+    Throw = 1,
+}
+
+/// <summary>
 /// 定义启动预热失败时组件的行为。
 /// </summary>
 public enum StartupFailurePolicy

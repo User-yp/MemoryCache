@@ -6,6 +6,9 @@ namespace MemoryCache;
 /// <typeparam name="TEntity">被缓存的实体类型。</typeparam>
 internal sealed class CacheSnapshot<TEntity>
 {
+    /// <summary>
+    /// 条目列表。以只读包装对外暴露，避免调用方强转成数组后修改缓存内容。
+    /// </summary>
     public required IReadOnlyList<TEntity> Items { get; init; }
 
     /// <summary>

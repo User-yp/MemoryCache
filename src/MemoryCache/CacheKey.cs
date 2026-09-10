@@ -21,25 +21,41 @@ internal sealed class CacheKey : IEquatable<CacheKey>
 
         _values = values;
         _hashCode = ComputeHashCode(values);
+        HasNestedValues = ContainsNestedValues(values);
     }
 
-    internal static CacheKey FromValues(object?[] values)
-        => new(values);
+    /// <summary>
+    /// 获取一个值，指示键的分量本身是否还是键（嵌套元组/嵌套规范化键）。
+    /// 这类键需要先展开再比较，不能按下标直接比。
+    /// </summary>
+    internal bool HasNestedValues { get; }
+
+    internal int Length
+        => _values.Length;
+
+    internal object? GetValue(int index)
+        => _values[index];
 
     /// <summary>
-    /// 将任意的用户键转换为规范化的字典键。元组（包括嵌套元组及其他
-    /// <see cref="CacheKey"/> 实例）会被扁平化为单层复合键。
+    /// 判断一个键是否属于“可展开”的结构化键（元组或规范化键）。
     /// </summary>
-    internal static object Normalize(object? key)
+    internal static bool IsStructural(object? key)
+        => key is CacheKey or ITuple;
+
+    /// <summary>
+    /// 判断元组的各个分量是否都是标量；含嵌套键的元组需要展开后比较。
+    /// </summary>
+    internal static bool IsFlatTuple(ITuple tuple)
     {
-        if (key is CacheKey or ITuple)
+        for (var i = 0; i < tuple.Length; i++)
         {
-            var parts = new List<object?>();
-            Flatten(key, parts);
-            return new CacheKey(parts.ToArray());
+            if (IsStructural(tuple[i]))
+            {
+                return false;
+            }
         }
 
-        return key!;
+        return true;
     }
 
     public bool Equals(CacheKey? other)
@@ -106,5 +122,18 @@ internal sealed class CacheKey : IEquatable<CacheKey>
         }
 
         return hash.ToHashCode();
+    }
+
+    private static bool ContainsNestedValues(object?[] values)
+    {
+        foreach (var value in values)
+        {
+            if (IsStructural(value))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
