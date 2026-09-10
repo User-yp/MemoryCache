@@ -1,4 +1,3 @@
-using MemoryCache;
 using MemoryCache.Abstractions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;

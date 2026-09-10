@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>MemoryCache.Redis</RootNamespace>
+    <PackageId>MemoryCache.Redis</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>MemoryCache Contributors</Authors>
+    <Description>MemoryCache 的 Redis 共享快照扩展：两级缓存（进程内快照 + Redis 快照）、跨进程失效广播与回源保护。</Description>
+    <PackageTags>memory-cache;entity;redis;distributed;dotnet</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.2" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
+    <PackageReference Include="StackExchange.Redis" Version="2.8.16" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 依赖核心实现包：Redis 扩展必须配合核心包使用，业务工程只需引用本包。 -->
+    <ProjectReference Include="..\MemoryCache\MemoryCache.csproj" />
+  </ItemGroup>
+
+</Project>

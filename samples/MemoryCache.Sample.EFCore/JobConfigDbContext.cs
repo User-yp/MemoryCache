@@ -1,3 +1,4 @@
+using MemoryCache.Samples.Shared;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
@@ -15,7 +16,8 @@ public sealed class JobConfigDbContext(DbContextOptions<JobConfigDbContext> opti
     {
         var entity = modelBuilder.Entity<JobConfig>();
 
-        entity.ToTable("job_config");
+        // 表名可由 MEMORY_CACHE_MYSQL_TABLE 自定义，与建表辅助保持一致。
+        entity.ToTable(SampleSchema.ResolveTableName());
         entity.HasKey(config => new { config.Group, config.JobKeyName });
 
         entity.Property(config => config.Group)

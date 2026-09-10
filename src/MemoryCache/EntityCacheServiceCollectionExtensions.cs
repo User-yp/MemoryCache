@@ -45,8 +45,13 @@ public static class EntityCacheServiceCollectionExtensions
         // 指标由容器持有：同一个 ServiceCollection 构建多个容器时各自独立，
         // 也不会把同一个 Meter 的仪表注册两遍。
         services.AddSingleton(_ => new CacheMetrics(builder.ServiceOptions));
+
+        // 同一个实例同时作为缓存服务与“原始取数”入口对外暴露。
+        services.AddSingleton(serviceProvider => new EntityCacheService(serviceProvider, options));
         services.AddSingleton<IEntityCacheService>(serviceProvider =>
-            new EntityCacheService(serviceProvider, options));
+            serviceProvider.GetRequiredService<EntityCacheService>());
+        services.AddSingleton<IEntitySourceLoader>(serviceProvider =>
+            serviceProvider.GetRequiredService<EntityCacheService>());
 
         if (options.ServiceOptions.WarmupOnStartup)
         {

@@ -8,7 +8,7 @@ namespace MemoryCache;
 /// <summary>
 /// <see cref="IEntityCacheService"/> 的默认单例实现。
 /// </summary>
-internal sealed class EntityCacheService : IEntityCacheService, IDisposable
+internal sealed class EntityCacheService : IEntityCacheService, IEntitySourceLoader, IDisposable
 {
     private readonly ConcurrentDictionary<Type, IEntityCache> _entries = new();
 
@@ -19,6 +19,8 @@ internal sealed class EntityCacheService : IEntityCacheService, IDisposable
     private readonly CacheMetrics _metrics;
 
     private readonly CancellationTokenSource _lifetimeSource = new();
+
+    private int _disposed;
 
     public EntityCacheService(IServiceProvider serviceProvider, EntityCacheOptions options)
     {
@@ -70,6 +72,20 @@ internal sealed class EntityCacheService : IEntityCacheService, IDisposable
     public async Task ReloadAsync<TEntity>(CancellationToken cancellationToken = default)
         where TEntity : class
         => await ReloadAsync(typeof(TEntity), cancellationToken).ConfigureAwait(false);
+
+    public async Task<IReadOnlyList<TEntity>> LoadAsync<TEntity>(
+        CancellationToken cancellationToken = default)
+        where TEntity : class
+    {
+        if (_entries.TryGetValue(typeof(TEntity), out var cache)
+            && cache is EntityCache<TEntity> typedCache)
+        {
+            return await typedCache.LoadFromSourceAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        throw new KeyNotFoundException(
+            $"Entity type '{typeof(TEntity).FullName}' is not registered with the entity memory cache.");
+    }
 
     public async Task ReloadAsync(Type entityType, CancellationToken cancellationToken = default)
     {
@@ -149,6 +165,13 @@ internal sealed class EntityCacheService : IEntityCacheService, IDisposable
 
     public void Dispose()
     {
+        // 同一个实例会作为 IEntityCacheService / IEntitySourceLoader 等多个服务类型注册，
+        // 容器可能多次释放它，因此这里必须幂等。
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         // 取消生命周期令牌，让在途的后台刷新尽快退出。
         // 指标（Meter）由 DI 容器持有并负责释放，这里不重复释放。
         _lifetimeSource.Cancel();

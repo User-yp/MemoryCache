@@ -1,5 +1,5 @@
-using MemoryCache;
 using MemoryCache.Abstractions;
+using MemoryCache.Samples.Shared;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace MemoryCache.Sample;
@@ -7,13 +7,21 @@ namespace MemoryCache.Sample;
 internal static class Program
 {
     private const string DefaultConnectionString =
-        "Server=127.0.0.1;Port=3306;Database=quartz;User=root;Password=1234;SslMode=None";
+        "Server=127.0.0.1;Port=3306;Database=quartz;User=root;Password=1234;SslMode=None;" +
+        "AllowPublicKeyRetrieval=True";
 
     public static async Task<int> Main()
     {
         var connectionString =
             Environment.GetEnvironmentVariable("MEMORY_CACHE_MYSQL") ?? DefaultConnectionString;
-        var loader = new JobConfigLoader(connectionString);
+
+        // 表名可通过 MEMORY_CACHE_MYSQL_TABLE 自定义（默认 job_config）；
+        // 库/表不存在时会自动创建并写入一行示例数据，方便一台干净机器直接跑起来。
+        var tableName = SampleSchema.ResolveTableName();
+        await SampleSchema.EnsureAsync(connectionString, tableName);
+        Console.WriteLine($"数据表：{tableName}（缺失时自动建库建表 + 写入示例数据）");
+
+        var loader = new JobConfigLoader(connectionString, tableName);
 
         var services = new ServiceCollection();
         services.AddEntityMemoryCache(builder =>

@@ -1,7 +1,6 @@
 using MemoryCache.Abstractions;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
-using MemoryCache;
 
 namespace MemoryCache.Tests;
 

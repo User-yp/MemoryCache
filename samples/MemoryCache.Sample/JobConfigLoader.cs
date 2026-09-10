@@ -6,7 +6,7 @@ namespace MemoryCache.Sample;
 /// <summary>
 /// 使用 MySqlConnector 全量加载 <c>job_config</c> 表。
 /// </summary>
-public sealed class JobConfigLoader(string connectionString) : IEntityLoader<JobConfig>
+public sealed class JobConfigLoader(string connectionString, string tableName) : IEntityLoader<JobConfig>
 {
     private int _loadCount;
 
@@ -22,7 +22,7 @@ public sealed class JobConfigLoader(string connectionString) : IEntityLoader<Job
         await using var command = connection.CreateCommand();
         command.CommandText =
             "SELECT `GROUP`, JOB_KEYNAME, JOB_DESC, TRIGGER_KEYNAME, TRIGGER_DESC, " +
-            "CRON, CRON_DESC, IS_ENABLE FROM job_config";
+            $"CRON, CRON_DESC, IS_ENABLE FROM `{tableName}`";
 
         var items = new List<JobConfig>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);

@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Diagnostics.Metrics;
 using System.Runtime.ExceptionServices;
 using MemoryCache.Abstractions;
 using Microsoft.Extensions.DependencyInjection;
@@ -317,9 +316,16 @@ internal sealed class EntityCache<TEntity> : IEntityCache<TEntity>, IEntityCache
     {
         using var scope = _scopeFactory.CreateScope();
 
-        IEntityLoader<TEntity> loader = _registration.LoaderFactory is { } loaderFactory
-            ? loaderFactory(scope.ServiceProvider)
-            : scope.ServiceProvider.GetRequiredService<IEntityLoader<TEntity>>();
+        var loader = ResolveLoader(scope.ServiceProvider);
+
+        // 允许第三方包装饰加载器（例如 MemoryCache.Redis 先读 Redis、未命中再回源数据库）。
+        foreach (var decorator in scope.ServiceProvider.GetServices<IEntityLoaderDecorator<TEntity>>())
+        {
+            loader = decorator.Decorate(loader)
+                ?? throw new InvalidOperationException(
+                    $"Loader decorator '{decorator.GetType().Name}' returned null for cache " +
+                    $"entity '{_registration.Name}'.");
+        }
 
         var loadedItems = await loader.LoadAsync(cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException(
@@ -347,6 +353,31 @@ internal sealed class EntityCache<TEntity> : IEntityCache<TEntity>, IEntityCache
             Version = newVersion,
             LoadedAt = DateTimeOffset.UtcNow,
         };
+    }
+
+    /// <summary>
+    /// 解析使用方配置的原始加载器（未经任何装饰）。
+    /// </summary>
+    private IEntityLoader<TEntity> ResolveLoader(IServiceProvider scopeProvider)
+        => _registration.LoaderFactory is { } loaderFactory
+            ? loaderFactory(scopeProvider)
+            : scopeProvider.GetRequiredService<IEntityLoader<TEntity>>();
+
+    /// <summary>
+    /// 用原始加载器取数（绕开装饰器），供扩展组件回填共享存储使用。
+    /// </summary>
+    /// <param name="cancellationToken">取消令牌。</param>
+    internal async Task<IReadOnlyList<TEntity>> LoadFromSourceAsync(
+        CancellationToken cancellationToken)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var loader = ResolveLoader(scope.ServiceProvider);
+
+        var items = await loader.LoadAsync(cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException(
+                $"Loader for cache entity '{_registration.Name}' returned null.");
+
+        return items as IReadOnlyList<TEntity> ?? items.ToArray();
     }
 
     private IReadOnlyDictionary<object, TEntity>? BuildIndex(TEntity[] items)

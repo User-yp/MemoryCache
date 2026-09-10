@@ -24,6 +24,7 @@
 - [11. 开发与验证](#11-开发与验证)
 - [12. 设计约定与演进](#12-设计约定与演进)
 - [13. 常见问题](#13-常见问题)
+- [14. 多进程部署与 Redis 共享快照](#14-多进程部署与-redis-共享快照)
 
 ---
 
@@ -51,9 +52,9 @@
 - **可观测性**：内置日志与 `System.Diagnostics.Metrics` 指标；
 - **包拆分**：`MemoryCache.Abstractions`（零依赖契约）+ `MemoryCache`（实现）。
 
-### 1.2 本期明确不做
+### 1.2 明确不做
 
-- 分布式 / Redis / 多进程共享缓存；
+- 读时穿透共享缓存（查询直接打 Redis）：读路径永远是进程内快照，见第 14 节；
 - 逐条过期、LRU、容量淘汰（组件面向小表，超阈值只告警）；
 - 写穿、双写一致性与数据库变更自动感知（CDC/触发器）；
 - 跨实体的事务性一致快照；
@@ -75,10 +76,12 @@
 ```text
 src/MemoryCache.Abstractions     # 契约包
 src/MemoryCache                  # 实现包
+src/MemoryCache.Redis            # 可选：Redis 共享快照（两级缓存）
 ```
 
 `MemoryCache.csproj` 会自动带上对 `Abstractions` 的工程引用；业务工程只需引用
-`MemoryCache`（并自行添加所用 ORM 的包）。
+`MemoryCache`（并自行添加所用 ORM 的包）。需要多实例部署时再额外引用
+`MemoryCache.Redis`，见第 14 节。
 
 未来发布后可执行：
 
@@ -519,12 +522,14 @@ MemoryCache.sln
 │  └─ 开发设计文档.md                 # 完整设计文档（含里程碑）
 ├─ src/
 │  ├─ MemoryCache.Abstractions/       # 契约：特性、接口、事件（零依赖）
-│  └─ MemoryCache/                    # 实现：快照、注册、刷新、Hosted Service
+│  ├─ MemoryCache/                    # 实现：快照、注册、刷新、Hosted Service
+│  └─ MemoryCache.Redis/              # 可选：Redis 共享快照、跨进程失效广播
 ├─ tests/
 │  └─ MemoryCache.Tests/              # xUnit 测试
 ├─ samples/
 │  ├─ MemoryCache.Sample/             # MySqlConnector 直连样例
-│  └─ MemoryCache.Sample.EFCore/      # EF Core + Pomelo 样例
+│  ├─ MemoryCache.Sample.EFCore/      # EF Core + Pomelo 样例
+│  └─ MemoryCache.Sample.Redis/       # Redis 两级缓存样例（本机 Redis 即可运行）
 ├─ benchmarks/
 │  └─ MemoryCache.Benchmark/          # 轻量基准
 └─ artifacts/packages/                # dotnet pack 输出（不入库）
@@ -539,26 +544,71 @@ MemoryCache.sln
 两个样例默认连接本机开发库：
 
 ```text
-Server=127.0.0.1;Port=3306;Database=quartz;User=root;Password=1234;SslMode=None
+Server=127.0.0.1;Port=3306;Database=quartz;User=root;Password=1234;SslMode=None;AllowPublicKeyRetrieval=True
 ```
 
 可通过环境变量 `MEMORY_CACHE_MYSQL` 覆盖；生产环境请改用配置中心/环境变量注入，
-不要把口令写死在代码里。
+不要把口令写死在代码里。连接串里的 `AllowPublicKeyRetrieval=True` 是 MySQL 8+ 使用
+`caching_sha2_password` 且未启用 TLS 时本地开发所必需的。
+
+| 环境变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `MEMORY_CACHE_MYSQL` | 上面的连接串 | 连接串（含库名） |
+| `MEMORY_CACHE_MYSQL_TABLE` | `job_config` | 实体类对应的表名 |
+
+**样例会自举**：连接串里的库不存在会先建库，表不存在会按实体结构建表
+（复合主键 `GROUP` + `JOB_KEYNAME`，字段见 `samples/MemoryCache.Sample/JobConfigLoader.cs`
+的 SELECT 语句），表为空时写入一行示例数据。因此在只有 MySQL 的机器上可以直接跑通。
+要换成你自己的实体/表：改 `MEMORY_CACHE_MYSQL_TABLE` 指定表名，并同步修改示例实体
+`JobConfig` 与建表语句 `samples/Shared/SampleSchema.cs`。
 
 ```bash
 dotnet run --project samples/MemoryCache.Sample
 dotnet run --project samples/MemoryCache.Sample.EFCore
+
+# 演示“自定义实体/表的镜像”：换一张表名，样例会自动建表并灌入示例数据
+$env:MEMORY_CACHE_MYSQL_TABLE = 'demo_job_config'    # PowerShell
+dotnet run --project samples/MemoryCache.Sample
 ```
 
 预期输出（本机 `job_config` 表）：
 
 ```text
+数据表：job_config（缺失时自动建库建表 + 写入示例数据）
 Loaded 1 row(s), Version=1, LoaderCalls=1
 [Group1/TestJob] cron=aas, trigger=testname, enabled=False
 Composite key lookup (Group1, TestJob) => aas
 ```
 
-### 10.2 基准
+### 10.2 运行 Redis 两级缓存样例
+
+`samples/MemoryCache.Sample.Redis` 只需本机 Redis（默认 `127.0.0.1:6379`），
+不依赖数据库：它用内存假库演示"L2 未命中 → 查库回填 / 命中不查库 / 写入方回填广播 /
+TTL 过期回源"的完整链路。
+
+```bash
+dotnet run --project samples/MemoryCache.Sample.Redis
+```
+
+预期输出（示例把 TTL 设为 3 秒以便演示过期）：
+
+```text
+=== 1. 实例 A 首次加载：Redis 未命中 → 查库 → 回填共享快照 ===
+   实例A：版本=1 条目=2 [...]；该实例加载器调用 1 次；数据库累计查询 1 次
+=== 2. 实例 B 首次加载：命中 Redis 共享快照，不查库 ===
+   实例B：版本=1 条目=2 [...]；该实例加载器调用 0 次；数据库累计查询 1 次
+=== 3. 写入方改库 → 回填 Redis → 广播其它实例 ===
+   实例A：版本=2 条目=2 [...]；该实例加载器调用 2 次；数据库累计查询 2 次
+=== 4. 实例 B 收到广播：从共享快照刷新，不查库 ===
+   实例B：版本=2 条目=2 [...]；该实例加载器调用 0 次；数据库累计查询 2 次
+=== 5. 等共享快照过期（示例 TTL 3 秒）后刷新：重新回源数据库 ===
+   实例A：版本=3 条目=2 [...]；该实例加载器调用 3 次；数据库累计查询 3 次
+```
+
+关键看两个计数器：**实例 B 的加载器始终是 0 次**（一直吃共享快照），
+数据库累计查询只在"首次回填"和"TTL 过期"时增长。
+
+### 10.3 基准
 
 ```bash
 dotnet run --project benchmarks/MemoryCache.Benchmark -c Release
@@ -581,17 +631,36 @@ AsQueryable 全量过滤（1,000 次） 约 633 µs/次，分配 11439 B/次
 
 ## 11. 开发与验证
 
-```bash
-# 还原时若离线环境缺少 HOME，先指定全局包目录：
-# $env:NUGET_PACKAGES = 'C:\Users\N05029B\.nuget\packages'
+仓库自带质量护栏（与 CI 一致，本地同样生效）：
 
-dotnet build MemoryCache.sln
-dotnet test  MemoryCache.sln
-dotnet pack  src/MemoryCache/MemoryCache.csproj -c Release -o artifacts/packages
+| 护栏 | 位置 | 作用 |
+| --- | --- | --- |
+| SDK 版本锁定 | [global.json](global.json) | 本地与 CI 用同一个 SDK（8.0.401，`rollForward: latestFeature`） |
+| 仓库级构建设置 | [Directory.Build.props](Directory.Build.props) | `TreatWarningsAsErrors`、`EnforceCodeStyleInBuild`、`Deterministic`；只有发布的三个包要求公共成员写 XML 注释（CS1591） |
+| 代码风格 | [.editorconfig](.editorconfig) | 缩进/字符集/`IDE0005`（未使用的 using 视为警告，会打断构建） |
+| 包源 | [nuget.config](nuget.config) | 显式声明 nuget.org，避免机器级配置导致还原结果不一致 |
+| CI | [.github/workflows/ci.yml](.github/workflows/ci.yml) | restore → format 校验 → Release 构建 → 测试 → Redis 示例冒烟 → 打包并上传 nupkg；用 `redis:7` 服务容器跑集成测试 |
+
+本地跑一遍与 CI 等价的命令：
+
+```bash
+dotnet restore MemoryCache.sln
+dotnet format  MemoryCache.sln --verify-no-changes --no-restore   # 格式与代码风格门禁
+dotnet build   MemoryCache.sln --no-restore -c Release
+dotnet test    MemoryCache.sln --no-build -c Release
+dotnet run --project samples/MemoryCache.Sample.Redis -c Release --no-build   # 需要本机 Redis
+
 dotnet pack  src/MemoryCache.Abstractions/MemoryCache.Abstractions.csproj -c Release -o artifacts/packages
+dotnet pack  src/MemoryCache/MemoryCache.csproj -c Release -o artifacts/packages
+dotnet pack  src/MemoryCache.Redis/MemoryCache.Redis.csproj -c Release -o artifacts/packages
 ```
 
-质量标准：构建 0 警告 0 错误；当前 58 个测试全部通过。
+集成测试与 Redis 示例都读环境变量 `MEMORY_CACHE_REDIS`（默认 `127.0.0.1:6379`），
+Redis 不可用时集成用例自动跳过；MySQL 样例读 `MEMORY_CACHE_MYSQL` /
+`MEMORY_CACHE_MYSQL_TABLE`（见 10.1）。
+
+质量标准：构建 **0 警告 0 错误**（由 `TreatWarningsAsErrors` 强制），
+当前 **69 个测试全部通过**。
 
 ---
 
@@ -608,6 +677,7 @@ dotnet pack  src/MemoryCache.Abstractions/MemoryCache.Abstractions.csproj -c Rel
 | M4 | EF Core 集成示例与真实 MySQL 联调 | ✅ |
 | M5 | 指标、日志、XML 文档、打包、基准 | ✅ |
 | M6 | 取消透传与刷新超时、数据策略（null 键）、读路径零分配、事件回调加固 | ✅ |
+| M7 | Redis 共享快照（两级缓存）、跨进程失效广播、回源锁与降级 | ✅ |
 
 ### 12.2 命名与版本
 
@@ -618,8 +688,8 @@ dotnet pack  src/MemoryCache.Abstractions/MemoryCache.Abstractions.csproj -c Rel
 
 - EF Core / Dapper 官方适配包；
 - 读取时克隆（`CloneOnRead`）选项；
-- 外部失效桥（MQ/管理后台 → `Invalidate`），支撑多实例部署；
-- 分布式缓存后端抽象（把 `IEntityCacheService` 换成混合缓存实现）；
+- 外部失效桥的其它通道（MQ / 管理后台 → `Invalidate`）：Redis 通道已实现，见第 14 节；
+- 读时穿透的分布式缓存后端（把 `IEntityCacheService` 换成混合缓存实现）；
 - 数据库版本号比对的增量刷新。
 
 ---
@@ -667,8 +737,10 @@ var job = cache.Get<JobConfig>().GetByKey(("Group1", "TestJob"));
 
 **Q7：多实例部署怎么办？**
 
-当前为进程内缓存，各实例各自维护一份。多实例需要外部通知：
-数据库变更后通过 MQ 等广播，收到消息的实例调用 `Invalidate`/`ReloadAsync`。
+核心包是进程内缓存，各实例各自维护一份快照；多实例部署时用可选的
+`MemoryCache.Redis` 把 Redis 作为共享快照与失效广播通道，见第 14 节。
+如果用其它中间件（MQ、管理后台），也只需在收到通知时调用
+`Invalidate`/`ReloadAsync` 即可。
 
 **Q8：加载器很慢、想让刷新有个时限怎么办？**
 
@@ -682,6 +754,87 @@ var job = cache.Get<JobConfig>().GetByKey(("Group1", "TestJob"));
 默认不会。`NullKeyPolicy` 默认为 `KeepUnindexed`：记录告警、该条目保留在快照里，
 只是不进键索引；刷新照常成功。需要严格模式时把它设为 `Throw`，让整次刷新失败、
 继续使用上一份快照。
+
+---
+
+## 14. 多进程部署与 Redis 共享快照
+
+核心包是**进程内缓存**：每个进程各持一份快照，读到的永远是"某一次完整加载的结果"。
+多进程 / 多实例部署时，引用可选的 `MemoryCache.Redis` 包，把 Redis 当作**共享快照（L2）**，
+进程内快照作为 **L1**：
+
+```text
+读              L1 命中 → 直接返回（0 IO）
+L1 失效         后台刷新 → 读 Redis（L2）
+L2 命中         反序列化 → 原子发布 L1
+L2 未命中/过期   抢跨进程锁 → 查库 → 回填 Redis（TTL）→ 发布 L1
+数据变更         写入方改库 → 回源查库 → 回填 Redis → 本进程刷新 → 广播其它实例失效
+```
+
+**读路径没有变化**：查询仍然只读进程内快照；Redis 只在"刷新"时被访问一次。
+
+### 14.1 引入与配置
+
+```csharp
+services.AddEntityMemoryCache(builder =>
+{
+    builder.AddEntity<JobConfig>(entity => entity
+        .WithKey(item => item.Key)
+        .WithLoader(provider => new JobConfigLoader(/* 数据源 */)));
+});
+
+services.AddEntityMemoryCacheRedis(options =>
+{
+    options.Configuration = "127.0.0.1:6379";           // StackExchange.Redis 连接串
+    options.KeyPrefix = "memorycache:snapshot:";         // 快照键前缀
+    options.EntryTimeToLive = TimeSpan.FromMinutes(30);  // L2 存活期
+    options.TimeToLiveJitter = TimeSpan.FromMinutes(5);  // 抖动上限，避免集体过期
+    options.InvalidationChannel = "memorycache:invalidate";
+    // options.EntityFilter = type => type != typeof(LocalOnlyConfig); // 可选：排除某些实体
+});
+```
+
+`AddEntityMemoryCacheRedis` 通过 `IEntityLoaderDecorator<TEntity>` 扩展点自动给实体包上
+"先读 Redis、未命中回源数据库并回填"的加载器，**业务加载器无需改动**；
+多个系统共享同一份数据时，可用 `options.MapEntityKey<TEntity>("job-config")` 指定键名。
+
+### 14.2 写入方：改库后回填并广播
+
+```csharp
+var maintenance = provider.GetRequiredService<IRedisEntitySnapshotMaintenance>();
+
+await db.SaveAsync();                              // 1. 改数据库
+await maintenance.RefreshFromSourceAsync<JobConfig>(); // 2. 回填 + 刷新本进程 + 广播
+```
+
+`RefreshFromSourceAsync` 依次做四件事：**强制回源取数**（绕开 L2，保证拿到数据库最新值，
+走 `IEntitySourceLoader`）→ 写 Redis（带 TTL + 抖动）→ 刷新本进程快照（读 Redis，不重复查库）
+→ 向频道广播。其它实例收到广播后按自己的失效模式刷新，刷新同样从 Redis 读取。
+
+### 14.3 三层兜底
+
+| 机制 | 作用 | 说明 |
+| --- | --- | --- |
+| Redis Pub/Sub 广播 | 秒级新鲜度（主路径） | Pub/Sub 不持久化，可能丢消息 |
+| L1 定时刷新（`WithRefreshInterval`） | 兜底广播丢失 | 建议给关键实体配上 |
+| Redis TTL（30 分钟 + 抖动） | 兜底长期未刷新 | 到期后下次刷新回源数据库并回填 |
+
+### 14.4 防雪崩与降级
+
+- **跨进程回源锁**：L2 未命中时用 `SET NX PX` 抢锁，只有一个实例查库回填，
+  其余实例等待后重读 Redis；等不到就自己回源（宁可多查一次库，也不要刷新失败）；
+- **Redis 不可用**：自动降级为"只用进程内缓存 + 直接回源数据库"，只记录告警日志；
+- **连接不阻断启动**：`AbortOnConnectFail=false`，Redis 后续恢复即自动接回；
+- **滚动发布**：预热会并发发起，实例多时注意数据库压力（可配合 `WithWarmupOnStartup(false)`
+  自行错峰）。
+
+### 14.5 一致性说明
+
+这不是强一致：从数据变更到各实例读到新值之间存在窗口（广播延迟 + 加载耗时 +
+兜底刷新周期）。组件保证的是"每个实例读到的都是某一次完整加载结果"，
+**不保证多实例在同一时刻读到相同的值**。对一致性要求更高的场景，可以在写入方
+`await RefreshFromSourceAsync<T>()` 返回后再继续后续逻辑（该调用返回时，本进程
+已经能看到新值）。
 
 ---
 

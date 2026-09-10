@@ -1,0 +1,50 @@
+<Project>
+
+  <!--
+    仓库级构建设置：所有工程（src / tests / samples / benchmarks）都继承这里。
+    目标：本地与 CI 用同一套规则，"0 警告"由构建来保证，而不是靠自觉。
+  -->
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- 把编译器警告当错误：新警告会让构建失败，避免"警告堆积"。 -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!-- 确定性构建，便于复现与校验。 -->
+    <Deterministic>true</Deterministic>
+
+    <!-- 让 .editorconfig 里的代码风格规则在构建时同样生效（IDE0005 未使用 using 等）。 -->
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+
+    <!--
+      IDE0005 在构建时生效要求生成文档文件，因此这里统一开启。
+      只有对外发布的包才要求"公共成员必须有 XML 注释"（CS1591），见下方。
+    -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <!--
+      NU1900 = 无法获取 NuGet 漏洞库数据（离线或网络受限环境）。
+      它反映的是网络问题而非代码问题，因此在离线开发时不作为警告/错误。
+      真实的漏洞告警（NU1901~NU1904）仍然会保留。
+    -->
+    <NoWarn>$(NoWarn);NU1900</NoWarn>
+  </PropertyGroup>
+
+  <!-- 示例、测试与基准工程不要求每个公共成员都写 XML 注释。 -->
+  <PropertyGroup Condition="'$(MSBuildProjectName)' != 'MemoryCache' And '$(MSBuildProjectName)' != 'MemoryCache.Abstractions' And '$(MSBuildProjectName)' != 'MemoryCache.Redis'">
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <!-- The SDK sets ContinuousIntegrationBuild automatically for CI, this is for clarity. -->
+  <PropertyGroup Condition="'$(CI)' == 'true'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <!-- 示例与基准工程不参与打包，避免误发。 -->
+  <PropertyGroup Condition="$(MSBuildProjectName.StartsWith('MemoryCache.Sample')) or $(MSBuildProjectName.StartsWith('MemoryCache.Benchmark'))">
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+</Project>

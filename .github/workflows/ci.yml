@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  # 集成测试与 Redis 示例都读这个环境变量（默认本机 127.0.0.1:6379）。
+  MEMORY_CACHE_REDIS: 127.0.0.1:6379
+
+jobs:
+  build-test-pack:
+    name: build / test / pack
+    runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore MemoryCache.sln
+
+      - name: Verify formatting
+        run: dotnet format MemoryCache.sln --verify-no-changes --no-restore
+
+      - name: Build
+        run: dotnet build MemoryCache.sln --no-restore -c Release
+
+      - name: Test
+        run: dotnet test MemoryCache.sln --no-build -c Release
+
+      - name: Run Redis two-level cache sample (end-to-end smoke)
+        run: dotnet run --project samples/MemoryCache.Sample.Redis -c Release --no-build
+
+      - name: Pack
+        run: |
+          dotnet pack src/MemoryCache.Abstractions/MemoryCache.Abstractions.csproj -c Release --no-build -o artifacts/packages
+          dotnet pack src/MemoryCache/MemoryCache.csproj -c Release --no-build -o artifacts/packages
+          dotnet pack src/MemoryCache.Redis/MemoryCache.Redis.csproj -c Release --no-build -o artifacts/packages
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: nupkg
+          path: artifacts/packages/*.nupkg
+          if-no-files-found: error

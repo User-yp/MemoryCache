@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
-using MemoryCache;
 using MemoryCache.Abstractions;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;

@@ -1,0 +1,39 @@
+# 仓库级编辑器与代码风格约定（IDE 与 dotnet format 都会读取）。
+root = true
+
+[*]
+charset = utf-8
+indent_style = space
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{cs,csx}]
+indent_size = 4
+
+[*.{csproj,props,targets,json,yml,yaml,config}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.cs]
+# using 排序与合并
+dotnet_sort_system_directives_first = true
+dotnet_separate_import_directive_groups = false
+
+# 代码风格（与现有代码一致的约定）
+csharp_style_namespace_declarations = file_scoped:warning
+csharp_prefer_braces = true:suggestion
+csharp_style_var_when_type_is_apparent = true:suggestion
+csharp_style_expression_bodied_methods = when_on_single_line:suggestion
+csharp_style_throw_expression = true:suggestion
+dotnet_style_qualification_for_field = false:suggestion
+dotnet_style_qualification_for_property = false:suggestion
+dotnet_style_require_accessibility_modifiers = for_non_interface_members:warning
+
+# 明确的诊断级别：未使用的 using 作为警告（构建时也会检查）
+dotnet_diagnostic.IDE0005.severity = warning
+
+# 生成的代码不检查
+[**/obj/**/*.cs]
+generated_code = true

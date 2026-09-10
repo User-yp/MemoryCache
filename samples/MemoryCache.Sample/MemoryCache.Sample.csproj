@@ -17,4 +17,9 @@
     <ProjectReference Include="..\..\src\MemoryCache\MemoryCache.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- 与 EF Core 样例共享的建库/建表辅助（用链接方式引用，避免为一个示例再开一个工程）。 -->
+    <Compile Include="..\Shared\SampleSchema.cs" Link="SampleSchema.cs" />
+  </ItemGroup>
+
 </Project>
