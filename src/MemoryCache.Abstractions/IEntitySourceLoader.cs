@@ -21,7 +21,7 @@ public interface IEntitySourceLoader
     /// <typeparam name="TEntity">实体类型。</typeparam>
     /// <param name="cancellationToken">取消令牌。</param>
     /// <returns>加载器返回的全部条目。</returns>
-    /// <exception cref="KeyNotFoundException">实体未注册。</exception>
+    /// <exception cref="EntityNotRegisteredException">实体未注册。</exception>
     Task<IReadOnlyList<TEntity>> LoadAsync<TEntity>(CancellationToken cancellationToken = default)
         where TEntity : class;
 }

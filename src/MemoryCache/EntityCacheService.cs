@@ -61,8 +61,7 @@ internal sealed class EntityCacheService : IEntityCacheService, IEntitySourceLoa
             return typedCache;
         }
 
-        throw new InvalidOperationException(
-            $"Entity type '{typeof(TEntity).FullName}' is not registered with the entity memory cache.");
+        throw new EntityNotRegisteredException(typeof(TEntity));
     }
 
     public bool IsRegistered<TEntity>()
@@ -83,8 +82,7 @@ internal sealed class EntityCacheService : IEntityCacheService, IEntitySourceLoa
             return await typedCache.LoadFromSourceAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        throw new KeyNotFoundException(
-            $"Entity type '{typeof(TEntity).FullName}' is not registered with the entity memory cache.");
+        throw new EntityNotRegisteredException(typeof(TEntity));
     }
 
     public async Task ReloadAsync(Type entityType, CancellationToken cancellationToken = default)
@@ -97,8 +95,7 @@ internal sealed class EntityCacheService : IEntityCacheService, IEntitySourceLoa
             return;
         }
 
-        throw new KeyNotFoundException(
-            $"Entity type '{entityType.FullName}' is not registered with the entity memory cache.");
+        throw new EntityNotRegisteredException(entityType);
     }
 
     public async Task ReloadAllAsync(CancellationToken cancellationToken = default)
@@ -123,8 +120,7 @@ internal sealed class EntityCacheService : IEntityCacheService, IEntitySourceLoa
         if (!_entries.TryGetValue(entityType, out var cache)
             || !_registrations.TryGetValue(entityType, out var registration))
         {
-            throw new KeyNotFoundException(
-                $"Entity type '{entityType.FullName}' is not registered with the entity memory cache.");
+            throw new EntityNotRegisteredException(entityType);
         }
 
         Invalidated?.Invoke(

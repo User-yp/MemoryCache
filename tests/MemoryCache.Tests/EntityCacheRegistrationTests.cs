@@ -24,7 +24,7 @@ public sealed class EntityCacheRegistrationTests
         Assert.Contains(typeof(SampleSwitch), cacheService.RegisteredTypes);
         Assert.True(cacheService.IsRegistered<SampleSwitch>());
         Assert.False(cacheService.IsRegistered<SampleUnmarkedEntity>());
-        Assert.Throws<InvalidOperationException>(() => cacheService.Get<SampleUnmarkedEntity>());
+        Assert.Throws<EntityNotRegisteredException>(() => cacheService.Get<SampleUnmarkedEntity>());
 
         var entry = cacheService.Get<SampleSwitch>();
         Assert.NotNull(entry);
@@ -177,6 +177,35 @@ public sealed class EntityCacheRegistrationTests
         var cacheService = provider.GetRequiredService<IEntityCacheService>();
 
         Assert.Empty(cacheService.RegisteredTypes);
-        Assert.Throws<InvalidOperationException>(() => cacheService.Get<SampleSwitch>());
+        Assert.Throws<EntityNotRegisteredException>(() => cacheService.Get<SampleSwitch>());
+    }
+
+    [Fact]
+    public async Task Accessing_an_unregistered_entity_throws_a_specific_exception()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IEntityLoader<SampleSwitch>, FakeSwitchLoader>();
+        services.AddEntityMemoryCache(builder => builder.AddEntity<SampleSwitch>());
+
+        using var provider = services.BuildServiceProvider();
+        var cacheService = provider.GetRequiredService<IEntityCacheService>();
+        var sourceLoader = provider.GetRequiredService<IEntitySourceLoader>();
+
+        var fromGet = Assert.Throws<EntityNotRegisteredException>(
+            () => cacheService.Get<SampleUnmarkedEntity>());
+        var fromReload = await Assert.ThrowsAsync<EntityNotRegisteredException>(
+            () => cacheService.ReloadAsync<SampleUnmarkedEntity>());
+        var fromInvalidate = Assert.Throws<EntityNotRegisteredException>(
+            () => cacheService.Invalidate(typeof(SampleUnmarkedEntity)));
+        var fromSourceLoad = await Assert.ThrowsAsync<EntityNotRegisteredException>(
+            () => sourceLoader.LoadAsync<SampleUnmarkedEntity>());
+
+        // 四个入口抛的是同一种异常，且都带上未注册的类型。
+        Assert.All(
+            new[] { fromGet, fromReload, fromInvalidate, fromSourceLoad },
+            exception => Assert.Equal(typeof(SampleUnmarkedEntity), exception.EntityType));
+
+        // 继承自 InvalidOperationException：老的 catch (InvalidOperationException) 仍然有效。
+        Assert.IsAssignableFrom<InvalidOperationException>(fromGet);
     }
 }

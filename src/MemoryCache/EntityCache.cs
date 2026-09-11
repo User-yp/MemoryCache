@@ -46,6 +46,7 @@ internal sealed class EntityCache<TEntity> : IEntityCache<TEntity>, IEntityCache
     private CacheSnapshot<TEntity>? _snapshot;
     private Task? _inFlight;
     private bool _stale;
+    private long _staleGeneration;
     private bool _lastReloadFailed;
     private Exception? _lastError;
 
@@ -158,7 +159,8 @@ internal sealed class EntityCache<TEntity> : IEntityCache<TEntity>, IEntityCache
             {
                 // 单飞：本次加载沿用“发起者”的取消令牌，后续加入的调用方
                 // 只能取消自己的等待，不会改变已经在跑的加载。
-                _inFlight = ExecuteReloadAsync(cancellationToken);
+                // 同时记下加载开始时的失效代次：期间新发生的失效不会被它清掉。
+                _inFlight = ExecuteReloadAsync(cancellationToken, _staleGeneration);
             }
 
             inFlight = _inFlight;
@@ -193,6 +195,7 @@ internal sealed class EntityCache<TEntity> : IEntityCache<TEntity>, IEntityCache
         lock (_stateGate)
         {
             _stale = true;
+            _staleGeneration++;
         }
     }
 
@@ -202,16 +205,51 @@ internal sealed class EntityCache<TEntity> : IEntityCache<TEntity>, IEntityCache
 
         if (invalidationMode == InvalidationMode.ReloadInBackground)
         {
-            _ = ReloadAsync(_lifetimeToken)
-                .ContinueWith(
-                    static task => _ = task.Exception,
-                    CancellationToken.None,
-                    TaskContinuationOptions.OnlyOnFaulted,
-                    TaskScheduler.Default);
+            _ = RefreshAfterInvalidationAsync();
         }
     }
 
-    private async Task ExecuteReloadAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// 失效后的后台刷新。
+    /// </summary>
+    /// <remarks>
+    /// 先等当前在途的刷新结束；如果那次刷新开始于本次失效之前（它的数据可能早于本次变更），
+    /// 再补一次刷新，保证“失效”不会因为撞上并发刷新而被吞掉。
+    /// </remarks>
+    private async Task RefreshAfterInvalidationAsync()
+    {
+        if (!await TryReloadAsync().ConfigureAwait(false))
+        {
+            // 刷新失败：错误已记录在 LastError，交给 EnsureFreshAsync / 定时刷新重试，
+            // 这里不立即重试，避免数据源故障时持续打库。
+            return;
+        }
+
+        if (!IsStale)
+        {
+            return;
+        }
+
+        await TryReloadAsync().ConfigureAwait(false);
+    }
+
+    private async Task<bool> TryReloadAsync()
+    {
+        try
+        {
+            await ReloadAsync(_lifetimeToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception)
+        {
+            // 失败原因已由 ExecuteReloadAsync 记录并告警，这里只需要知道“没成功”。
+            return false;
+        }
+    }
+
+    private async Task ExecuteReloadAsync(
+        CancellationToken cancellationToken,
+        long staleGeneration)
     {
         // 让出一次执行权：ExecuteReloadAsync 是在 ReloadAsync 的锁内被调用的，
         // 若加载器同步完成，整段刷新（含状态发布与 Reloaded 回调）都会跑在
@@ -276,7 +314,14 @@ internal sealed class EntityCache<TEntity> : IEntityCache<TEntity>, IEntityCache
                 if (error is null)
                 {
                     Volatile.Write(ref _snapshot, newSnapshot);
-                    _stale = false;
+
+                    // 只有本次加载开始之后没有新的失效，才清除失效标记：
+                    // 否则“加载期间发生的失效”会被这次（可能更旧的）加载结果吞掉。
+                    if (_staleGeneration == staleGeneration)
+                    {
+                        _stale = false;
+                    }
+
                     _lastReloadFailed = false;
                     _lastError = null;
                 }

@@ -45,6 +45,35 @@ internal sealed class SequenceLoader<TEntity> : IEntityLoader<TEntity>
         return Task.FromResult(_dataFactory());
     }
 }
+/// <summary>
+/// 分步可控加载器：每次调用<b>先取数</b>（模拟“数据库已经读完”），再等待放行
+/// （模拟慢查询/慢发布）。用于构造“取数之后、返回之前数据发生变化”的交错场景。
+/// </summary>
+internal sealed class StepLoader<TEntity> : IEntityLoader<TEntity>
+    where TEntity : class
+{
+    private readonly SemaphoreSlim _gate = new(0);
+    private int _loadCount;
+
+    public Func<IReadOnlyCollection<TEntity>> DataFactory { get; set; } = () => [];
+
+    /// <summary>获取已经“取到数并开始等待放行”的调用次数。</summary>
+    public int LoadCount => Volatile.Read(ref _loadCount);
+
+    public async Task<IReadOnlyCollection<TEntity>> LoadAsync(CancellationToken cancellationToken)
+    {
+        // 先取数：这样测试可以在“取数之后、返回之前”改写 DataFactory，
+        // 从而模拟“本次加载拿到的是变更前的数据”。
+        var items = DataFactory();
+
+        Interlocked.Increment(ref _loadCount);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        return items;
+    }
+
+    /// <summary>放行一次等待中的调用。</summary>
+    public void Release() => _gate.Release();
+}
 
 internal sealed class FailingAfterFirstLoader<TEntity> : IEntityLoader<TEntity>
     where TEntity : class

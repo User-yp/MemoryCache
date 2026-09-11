@@ -345,9 +345,13 @@ services.AddEntityMemoryCache(builder =>
 ```csharp
 var cacheService = serviceProvider.GetRequiredService<IEntityCacheService>();
 
-IEntityCache<AppSwitch> appSwitchCache = cacheService.Get<AppSwitch>(); // 未注册会抛异常
+IEntityCache<AppSwitch> appSwitchCache = cacheService.Get<AppSwitch>();
 bool registered = cacheService.IsRegistered<AppSwitch>();
 ```
+
+未注册的实体在 `Get<T>()`、`ReloadAsync(Type)`、`Invalidate(Type)` 以及扩展包用的
+`IEntitySourceLoader.LoadAsync<T>()` 上都会抛 `EntityNotRegisteredException`
+（继承自 `InvalidOperationException`，可用具体类型精确捕获，也可用基类兜住）。
 
 ### 6.2 `IEntityCache<TEntity>` 查询 API
 
@@ -425,6 +429,9 @@ cacheService.Invalidate(typeof(AppSwitch));
 | `MarkStaleOnly` | 只标记，等 `EnsureFreshAsync()` 或显式刷新 |
 
 `Invalidated` 服务级事件在失效行为执行前触发，便于监控。
+
+失效不会被在途刷新吞掉：如果通知到达时正好有一次刷新在进行，标记会保留，
+并在该次刷新结束后**自动补一次刷新**（因为那次刷新的数据可能早于本次变更）。
 
 ### 7.4 启动预热与定时刷新
 

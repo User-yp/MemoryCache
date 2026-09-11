@@ -9,7 +9,7 @@ public interface IEntityCacheService
     /// 返回为 <typeparamref name="TEntity"/> 注册的缓存项。
     /// </summary>
     /// <typeparam name="TEntity">被缓存的实体类型。</typeparam>
-    /// <exception cref="InvalidOperationException">
+    /// <exception cref="EntityNotRegisteredException">
     /// 当 <typeparamref name="TEntity"/> 尚未注册时抛出。
     /// </exception>
     IEntityCache<TEntity> Get<TEntity>()
@@ -40,7 +40,7 @@ public interface IEntityCacheService
     /// </summary>
     /// <param name="entityType">被缓存的实体类型。</param>
     /// <param name="cancellationToken">用于取消刷新的令牌。</param>
-    /// <exception cref="KeyNotFoundException">
+    /// <exception cref="EntityNotRegisteredException">
     /// 未为 <paramref name="entityType"/> 注册缓存项时抛出。
     /// </exception>
     Task ReloadAsync(Type entityType, CancellationToken cancellationToken = default);
@@ -64,6 +64,9 @@ public interface IEntityCacheService
     /// 具体行为由该缓存项的失效模式决定。
     /// </summary>
     /// <param name="entityType">被缓存的实体类型。</param>
+    /// <exception cref="EntityNotRegisteredException">
+    /// 未为 <paramref name="entityType"/> 注册缓存项时抛出。
+    /// </exception>
     void Invalidate(Type entityType);
 
     /// <summary>

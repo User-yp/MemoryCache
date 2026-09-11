@@ -323,6 +323,92 @@ public sealed class EntityCacheTests
     }
 
     [Fact]
+    public async Task Invalidation_is_not_lost_when_a_reload_is_already_in_flight()
+    {
+        var loader = new StepLoader<SampleSwitch>
+        {
+            DataFactory = () => [Switch("A", "v1")],
+        };
+        var services = new ServiceCollection();
+        services.AddEntityMemoryCache(builder =>
+        {
+            builder.AddEntity<SampleSwitch>(entity => entity
+                .WithKey(item => item.Code)
+                .WithLoader(_ => loader));
+            builder.WithWarmupOnStartup(false);
+        });
+
+        await using var provider = services.BuildServiceProvider();
+        var service = provider.GetRequiredService<IEntityCacheService>();
+        var entry = service.Get<SampleSwitch>();
+
+        // 第一次刷新：加载器已经取到 v1，但还没返回。
+        var firstReload = entry.ReloadAsync();
+        await WaitUntilAsync(() => loader.LoadCount == 1);
+
+        // 取数之后、返回之前，数据发生了变化（默认失效模式：标记 + 后台刷新）。
+        loader.DataFactory = () => [Switch("A", "v2")];
+        service.Invalidate<SampleSwitch>();
+
+        loader.Release();
+        await firstReload;
+
+        // 这次刷新开始于失效之前，不能把失效标记吞掉：应当再补一次刷新拿到 v2。
+        await WaitUntilAsync(() => loader.LoadCount == 2);
+        loader.Release();
+        await WaitUntilAsync(() => entry.GetByKey("A")?.Value == "v2");
+
+        Assert.Equal(2, loader.LoadCount);
+        Assert.False(entry.IsStale);
+        Assert.Null(entry.LastError);
+    }
+
+    [Fact]
+    public async Task Stale_mark_survives_a_reload_that_started_before_the_invalidation()
+    {
+        var loader = new StepLoader<SampleSwitch>
+        {
+            DataFactory = () => [Switch("A", "v1")],
+        };
+        var services = new ServiceCollection();
+        services.AddEntityMemoryCache(builder =>
+        {
+            builder.AddEntity<SampleSwitch>(entity => entity
+                .WithKey(item => item.Code)
+                .WithLoader(_ => loader)
+                .WithInvalidationMode(InvalidationMode.MarkStaleOnly));
+            builder.WithWarmupOnStartup(false);
+        });
+
+        await using var provider = services.BuildServiceProvider();
+        var service = provider.GetRequiredService<IEntityCacheService>();
+        var entry = service.Get<SampleSwitch>();
+
+        var firstReload = entry.ReloadAsync();
+        await WaitUntilAsync(() => loader.LoadCount == 1);
+
+        loader.DataFactory = () => [Switch("A", "v2")];
+        service.Invalidate<SampleSwitch>(); // 只标记，不触发刷新
+
+        loader.Release();
+        await firstReload;
+
+        // 刷新开始于失效之前，标记必须保留，数据仍是旧的。
+        Assert.True(entry.IsStale);
+        Assert.Equal("v1", entry.GetByKey("A")?.Value);
+
+        // 因此 EnsureFreshAsync 会重新加载，拿到变更后的数据。
+        var ensureFresh = entry.EnsureFreshAsync();
+        await WaitUntilAsync(() => loader.LoadCount == 2);
+        loader.Release();
+        await ensureFresh;
+
+        Assert.Equal("v2", entry.GetByKey("A")?.Value);
+        Assert.Equal(2, loader.LoadCount);
+        Assert.False(entry.IsStale);
+    }
+
+    [Fact]
     public async Task Composite_property_key_supports_tuple_lookup()
     {
         var loader = new SequenceLoader<SampleComposite>(
